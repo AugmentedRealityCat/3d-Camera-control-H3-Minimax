@@ -1,6 +1,7 @@
 // Original implementation inspired by the referenced camera editor layout.
 // All drawing and state stay local; no external assets or API requests.
-export function createCameraEditor({read, write, duration, interpolation, setDuration, linkedImage, elevationRange, switches}) {
+import { interpolatePose } from './trajectory-math.js';
+export function createCameraEditor({read, write, duration, interpolation, setDuration, linkedImage, elevationRange, switches, frameMode, setFrameMode, promptDetail, runtimeTask, motionFraction, loopClosure, setLoopClosure, experimentMode, setExperimentMode}) {
   const root=document.createElement('section');root.className='h3cam';
   root.innerHTML=`<style>
   .h3cam{--purple:#8035ff;--muted:#a5a4ae;box-sizing:border-box;width:100%;height:860px;overflow:auto;padding:16px;background:#191919;color:#f4f4f5;font:14px system-ui,sans-serif;border-radius:12px;user-select:none}
@@ -8,11 +9,11 @@ export function createCameraEditor({read, write, duration, interpolation, setDur
   .h3cam button,.h3cam select,.h3cam input{font:inherit;color:inherit}.h3cam button{cursor:pointer}.h3cam button:disabled{opacity:.3;cursor:default}.h3cam .icon{background:none;border:0;color:#aaa;font-size:23px;padding:2px 7px}.h3cam .icon:hover{color:white}.h3cam .stage{background:#212121;border-radius:12px;overflow:hidden}.h3cam .viewport{position:relative;height:360px}.h3cam .scene{display:block;width:100%;height:100%;touch-action:none}.h3cam .hint{position:absolute;bottom:12px;left:12px;right:12px;pointer-events:none;color:#aaa;background:#292929e0;border-radius:5px;padding:8px;font-size:11px;width:max-content;max-width:calc(100% - 24px)}
   .h3cam .transport{border-top:1px solid #2b2b2b;padding:18px 15px}.h3cam .track{position:relative;height:32px;touch-action:none;margin:8px 7px}.h3cam .rail{position:absolute;top:14px;left:0;right:0;height:5px;border-radius:4px;background:#47464b}.h3cam .marker{position:absolute;top:11px;width:12px;height:12px;background:#a6a5ac;transform:translateX(-50%) rotate(45deg);border:0;padding:0;touch-action:none}.h3cam .marker.active{background:var(--purple)}.h3cam .cursor{position:absolute;top:-1px;height:33px;width:1px;background:var(--purple);pointer-events:none}.h3cam .cursor:before{content:'';position:absolute;top:0;left:-4px;width:9px;height:9px;background:var(--purple);border-radius:50%}.h3cam .labels{display:flex;justify-content:space-between;color:#81808a;font:12px ui-monospace,monospace;margin-bottom:14px}.h3cam .bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.h3cam .play{background:#f5f5f5;color:#151515;border:0;border-radius:5px;width:40px;height:40px;font-size:21px}.h3cam .time{color:#adadb8;font:14px ui-monospace,monospace;margin-right:auto}.h3cam .bar label{color:var(--muted);font-size:12px;display:flex;align-items:center;gap:7px}.h3cam select{background:#222;border:1px solid #3c3c40;border-radius:5px;padding:7px 9px;max-width:100px}.h3cam .selected{color:#9657ff;margin-top:12px;font-size:13px}.h3cam .controls{display:grid;grid-template-columns:1fr 1.4fr 1.4fr;gap:18px;margin-top:17px}.h3cam .heading{display:flex;justify-content:space-between;color:var(--muted);gap:5px}.h3cam .number{width:61px;background:transparent;border:0;color:white;text-align:right;padding:0;appearance:textfield;-moz-appearance:textfield}.h3cam .number::-webkit-inner-spin-button{display:none}.h3cam .range{accent-color:var(--purple);width:100%;margin:17px 0;background:#292929}.h3cam .dial{display:block;width:90px;height:90px;margin-top:13px;touch-action:none;cursor:grab}.h3cam .viewlabel{font-size:11px;color:#aaa;margin-top:3px}.h3cam footer{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:13px;border-top:1px solid #303034;padding-top:10px;color:#96949e;font-size:11px}.h3cam .reference{border:1px solid #444;background:#222;color:#bbb;border-radius:5px;padding:6px 9px;font-size:11px}.h3cam .error{color:#ffb4a6;padding-top:6px;font-size:12px}.h3cam button:focus-visible,.h3cam input:focus-visible,.h3cam canvas:focus-visible{outline:2px solid #b992ff;outline-offset:3px}
   </style>
-  <header><span>Camera motion <small title="Planeja a câmera e gera instruções para o H3. Bruxos do VFX.">i</small></span><button class="icon" data-action="reset" title="Reset camera path" aria-label="Reset camera path">◇</button></header>
+  <header><span>bruxosdovfx · Camera motion <small title="Planeja a câmera e gera instruções para o H3. Bruxos do VFX.">i</small></span><button class="icon" data-action="reset" title="Reset camera path" aria-label="Reset camera path">◇</button></header>
   <div class="stage"><div class="viewport"><canvas class="scene" aria-label="Cena e trajetória da câmera"></canvas><div class="hint">Arraste a câmera na horizontal para orbitar, na vertical para elevar · o eixo trava no primeiro movimento · role para distância · arraste o fundo para olhar ao redor</div></div>
   <div class="transport"><div class="track" role="slider" tabindex="0" aria-label="Camera animation playhead" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="rail"></div><div class="markers"></div><div class="cursor"></div></div>
   <div class="labels"><span>0:00</span><span data-role="end"></span></div>
-  <div class="bar"><button class="play" data-action="play" aria-label="Play camera preview">▶</button><span class="time"></span><label>Keyframes<select aria-label="Keyframe count" data-role="count"></select></label><label>Duração<select aria-label="Video duration" data-role="duration"><option value="124">5.17s</option><option value="243">10.13s</option><option value="362">15.08s</option></select></label><button class="icon" data-action="remove" aria-label="Remove selected keyframe" title="Remover keyframe">♜</button></div>
+  <div class="bar"><button class="play" data-action="play" aria-label="Play camera preview">▶</button><span class="time"></span><label>Keyframes<select aria-label="Keyframe count" data-role="count"></select></label><label>Duração<select aria-label="Video duration" data-role="duration"><option value="124">5.125s</option><option value="243">10.083s</option><option value="362">15.042s</option></select></label><button class="icon" data-action="remove" aria-label="Remove selected keyframe" title="Remover keyframe">♜</button></div>
   <div class="selected"></div></div></div>
   <div class="controls"><div><div class="heading"><label for="">Azimuth</label><input class="number" aria-label="Azimuth degrees" type="number" data-field="azimuth" min="-11520" max="11520" step="1"></div><canvas class="dial" role="slider" tabindex="0" aria-label="Azimuth dial" aria-valuemin="-11520" aria-valuemax="11520"></canvas><div class="viewlabel"></div></div>
   <div><div class="heading"><span>Elevation</span><input class="number" aria-label="Elevation degrees" type="number" data-field="elevation" min="-89" max="89" step="1"></div><input class="range" aria-label="Elevation slider" data-field="elevation" type="range" min="-89" max="89" step="1"></div>
@@ -29,21 +30,51 @@ export function createCameraEditor({read, write, duration, interpolation, setDur
   .h3cam .controls{grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:12px}.h3cam .controls>div{padding:12px;background:#211e29;border:1px solid #393142;border-radius:10px;min-width:0}.h3cam .controls>div:first-child{border-top:2px solid #19bda1}.h3cam .controls>div:nth-child(2){border-top:2px solid #6b66db}.h3cam .controls>div:last-child{border-top:2px solid #9958ff}.h3cam .heading{font-size:12px}.h3cam .number{width:48px}.h3cam .dial{width:74px;height:74px;margin:8px auto 0}.h3cam .viewlabel{text-align:center;font-size:10px}.h3cam .range{margin-top:26px}.h3cam .controls>div:first-child .range{accent-color:#19c7a7}.h3cam footer{margin-top:10px;border:0;padding-top:0;font-size:10px}.h3cam .note{color:#ffd48a;font-size:11px;padding-top:5px;min-height:14px}.h3cam .clearref{background:none;border:0;color:#8cdfcd;font:inherit;text-decoration:underline;padding:0 0 0 6px}.h3cam .pure{border:1px solid #464052;background:#221f2b;color:#c9bfe0;border-radius:6px;padding:7px 10px;font-size:12px}.h3cam .switches{display:flex;gap:8px;flex-wrap:wrap;padding:8px 12px;border:1px solid #34313f;border-radius:10px;margin-bottom:12px;background:#1c1a24;align-items:center}.h3cam .switches b{font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:#7d7590;font-weight:600;margin-right:2px}.h3cam .sw{border:1px solid #464052;background:#221f2b;color:#8d85a0;border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer}.h3cam .sw[data-on='1']{border-color:#8c4cff;background:#2e2340;color:#e6dcff}.h3cam .closure{margin-left:auto;font-size:11px;color:#7d7590}.h3cam .closure[data-on='1']{color:#19c7a7}
   `;
   root.append(extraStyle);
+  extraStyle.textContent+=`.h3cam header{flex-wrap:wrap}.h3cam .path-tools{border:1px solid #34313f;border-radius:10px;margin:0 0 12px;padding:10px;background:#1c1a24}.h3cam .path-tools summary{cursor:pointer;font-size:12px;color:#c6b3ec}.h3cam .toolrow{display:flex;gap:7px;flex-wrap:wrap;margin-top:9px;align-items:center}.h3cam .toolrow select{max-width:215px}.h3cam .toolrow button{border:1px solid #464052;background:#221f2b;color:#c9bfe0;border-radius:6px;padding:7px 9px;font-size:11px}.h3cam .toolrow label{display:flex;align-items:center;gap:6px;font-size:11px;color:#b8afcb}.h3cam .diagnostics{font-size:11px;color:#ffd48a;margin-top:9px;white-space:pre-wrap}.h3cam .experiment-note{font-size:10px;color:#bfa8e5;line-height:1.45;margin-top:8px}.h3cam .switches select{max-width:170px}.h3cam .closure{flex-basis:100%;margin:0}.h3cam .error{white-space:pre-wrap}`;
   const header=root.querySelector('header'),bar=root.querySelector('.bar'),viewport=root.querySelector('.viewport');
   const reset=root.querySelector('[data-action=reset]'),reference=root.querySelector('[data-action=image]');
   const brand=document.createElement('div');brand.className='brand';
   const mark=document.createElement('img');mark.className='brandmark';mark.alt='';mark.decoding='async';
   mark.src=new URL('./logo.png',import.meta.url).href;
-  const wordmark=document.createElement('span');wordmark.innerHTML='<b>CAMERA H3</b><em>BRUXOS DO VFX</em>';
+  const wordmark=document.createElement('span');wordmark.innerHTML='<b>CAMERA H3</b><em>bruxosdovfx</em>';
   brand.append(mark,wordmark);
   header.replaceChildren(brand,reference);
+  const modeSelect=document.createElement('select');
+  modeSelect.setAttribute('aria-label','Modo de referência / Reference mode');
+  modeSelect.style.maxWidth='200px';modeSelect.style.fontSize='12px';
+  for(const name of ['Freeze Frame','Motion Frame']){const o=document.createElement('option');o.value=name;o.textContent=name;modeSelect.append(o);}
+  modeSelect.title='PT: Freeze Frame congela um frame; Motion Frame mantém a ação da sequência com Ref2VA. EN: Freeze Frame freezes one frame; Motion Frame preserves sequence action with Ref2VA.';
+  modeSelect.value=frameMode?.()||'Freeze Frame';
+  modeSelect.addEventListener('change',()=>setFrameMode?.(modeSelect.value));
+  header.append(modeSelect);
+  const tips={reset:'PT: Reinicia a trajetória. EN: Resets the path.',play:'PT: Reproduz a câmera; não gera vídeo. EN: Plays camera preview; does not generate video.',remove:'PT: Remove o keyframe escolhido. EN: Removes selected keyframe.',image:'PT: Foto apenas para a prévia; conecte frames ao node para gerar. EN: Preview-only image; connect frames to the node for generation.'};
+  for(const [action,tip] of Object.entries(tips)){const el=root.querySelector(`[data-action="${action}"]`);if(el)el.title=tip;}
+  for(const [field,tip] of Object.entries({azimuth:'PT: Ângulo da órbita. EN: Orbit angle.',elevation:'PT: Elevação relativa à câmera inicial. EN: Elevation relative to the starting camera.',distance:'PT: Raio relativo; 1 mantém distância inicial. EN: Relative radius; 1 preserves starting distance.'}))for(const el of root.querySelectorAll(`[data-field="${field}"]`))el.title=tip;
+  root.querySelector('.track').title='PT: Selecione o tempo e arraste keyframes. EN: Select time and drag keyframes.';
+  root.querySelector('[data-role="count"]').title='PT: Número de keyframes. EN: Number of camera keyframes.';
+  root.querySelector('[data-role="duration"]').title='PT: Duração de saída a 24 fps. EN: Output duration at 24 fps.';
+  const stillDuration=document.createElement('option');stillDuration.value='39';stillDuration.textContent='PT: Imagem · 1,625 s EN: Still · 1.625 s';stillDuration.disabled=true;root.querySelector('[data-role=duration]').append(stillDuration);
   reset.textContent='↺ Reiniciar';
   const pure=document.createElement('button');pure.className='pure';pure.dataset.action='pure';
-  pure.textContent='⟳ Órbita pura';pure.title='Zera a elevação de todos os keyframes, mantendo o azimute.';
-  bar.append(pure,reset);
+  pure.textContent='⟳ Órbita pura';pure.title='PT: Zera a elevação mantendo azimute e distância. EN: Resets elevation, keeping azimuth and distance.';
+  const shut=document.createElement('button');shut.className='pure';shut.dataset.action='close';
+  shut.textContent='⟲ Fechar volta';
+  shut.title='PT: Fecha o último ponto e restaura altura/raio. Loop closure só em Freeze Frame. EN: Closes the last pose and restores height/radius. Loop closure only in Freeze Frame.';
+  bar.append(pure,shut,reset);
   const previewbar=document.createElement('div');previewbar.className='previewbar';
   previewbar.append(root.querySelector('.time'),root.querySelector('.play'));viewport.append(previewbar);
   root.insertBefore(bar,root.querySelector('.stage'));
+  let experimentSelect=null;
+  if(experimentMode&&setExperimentMode){
+    // PT: container proprio; o bloco de ferramentas que o continha foi removido.
+    // EN: its own container; the tools block that used to hold it was removed.
+    const experimentBox=document.createElement('div');experimentBox.className='path-tools';
+    const row=document.createElement('div');row.className='toolrow';const label=document.createElement('label');const text=document.createElement('span');text.textContent='PT: Experimento EN: Experiment';experimentSelect=document.createElement('select');experimentSelect.dataset.role='experiment';experimentSelect.setAttribute('aria-label','PT: Receita experimental EN: Experimental recipe');
+    for(const [value,title] of [['Off','PT: Desligado EN: Off'],['Article compact','PT: Artigo · compacto EN: Article · compact'],['Article numbers only','PT: Artigo · só números EN: Article · numbers only']]){const option=document.createElement('option');option.value=value;option.textContent=title;experimentSelect.append(option);}
+    experimentSelect.title='PT: Hipótese de prompt para H3 local. Não ativa o endpoint do fal nem condicionamento geométrico. Compare mesma imagem, trajetória, seed e loop closure. EN: A prompt hypothesis for local H3. Does not enable the fal endpoint or geometric conditioning. Compare the same image, path, seed and loop closure.';
+    experimentSelect.addEventListener('change',()=>setExperimentMode(experimentSelect.value));label.append(text,experimentSelect);row.append(label);experimentBox.append(row);
+    const note=document.createElement('div');note.className='experiment-note';note.textContent='PT: Experimental: compara formas de escrever o prompt. A câmera ainda depende da interpretação do H3. EN: Experimental: compares prompt formats. Camera motion still depends on H3 interpretation.';experimentBox.append(note);root.insertBefore(experimentBox,root.querySelector('.stage'));
+  }
   const selectionrow=document.createElement('div');selectionrow.className='selectionrow';
   const remove=root.querySelector('[data-action=remove]');remove.textContent='− Remover ponto';
   selectionrow.append(root.querySelector('.selected'),remove);root.querySelector('.transport').append(selectionrow);
@@ -55,50 +86,51 @@ export function createCameraEditor({read, write, duration, interpolation, setDur
   const elevLimit=()=>Math.min(89,Math.max(elevationRange?.()||30,Math.abs(path[selected]?.elevation||0)));
   const defaults=()=>[{time:0,azimuth:0,elevation:0,distance:1},{time:.5,azimuth:45,elevation:10,distance:1},{time:1,azimuth:90,elevation:0,distance:.8}];
   let path=defaults(),selected=1,playhead=.5,lastRaw='',yaw=.55,pitch=.45,image=null,playing=false,raf=0,disposed=false,start=0;
-  let manualImage=null,linkedImg=null,linkedSrc='',poll=0;
+  let manualImage=null,linkedImg=null,linkedSrc='',poll=0,toolError='';
   let drag=null,dialAngle=0,markerDrag=null,cameraScreen=[0,0],hoverCamera=false;
   const format=t=>`${Math.floor(t/60)}:${(t%60).toFixed(1).padStart(4,'0')}`;
   for(let i=2;i<=24;i++){$('[data-role=count]').add(new Option(String(i),String(i)));}
-  function poseAt(t) {
-    if(t<=path[0].time)return path[0];
-    const j=path.findIndex(p=>p.time>=t);if(j<0)return path.at(-1);
-    const a=path[j-1],b=path[j];let u=(t-a.time)/(b.time-a.time);
-    if(interpolation()==='smooth')u=u*u*(3-2*u);
-    return Object.fromEntries(['azimuth','elevation','distance'].map(k=>[k,a[k]+(b[k]-a[k])*u]));
-  }
-  function save(rebuild=true) {lastRaw=JSON.stringify(path);write(lastRaw);update(rebuild);}
+  const activeFraction=()=>clamp(motionFraction?.()||1,.001,1);
+  let previousFraction=activeFraction();
+  const pathPoseAt=t=>interpolatePose(path,t,interpolation(),promptDetail?.()||'v15 baseline');
+  function poseAt(t) {return pathPoseAt(t/activeFraction());}
+  function save(rebuild=true) {toolError='';lastRaw=JSON.stringify(path);write(lastRaw);update(rebuild);}
   function stop(){playing=false;cancelAnimationFrame(raf);$('.play').textContent='▶';$('.play').setAttribute('aria-label','Play camera preview');}
-  function choose(i){stop();selected=i;playhead=path[i].time;update();}
+  function choose(i){stop();selected=i;playhead=path[i].time*activeFraction();update();}
   function update(rebuild=true) {
     selected=clamp(selected,0,path.length-1);
     if(rebuild){
       $('.markers').replaceChildren();
       path.forEach((p,i)=>{
-        const b=document.createElement('button');b.className='marker'+(selected===i?' active':'');b.style.left=`${p.time*100}%`;
-        b.setAttribute('aria-label',`Keyframe ${i+1} at ${format(p.time*duration())}`);b.dataset.index=i;b.title=`Keyframe ${i+1}`;
+        const b=document.createElement('button');b.className='marker'+(selected===i?' active':'');b.style.left=`${p.time*activeFraction()*100}%`;
+        b.setAttribute('aria-label',`Keyframe ${i+1} at ${format(p.time*activeFraction()*duration())}`);b.dataset.index=i;b.title=`Keyframe ${i+1}`;
         b.addEventListener('pointerdown',e=>{e.stopPropagation();choose(i);markerDrag={i};track.setPointerCapture(e.pointerId);});
         b.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose(i);}});
         $('.markers').append(b);
       });
-    }else path.forEach((p,i)=>{const b=$(`.marker[data-index="${i}"]`);if(b)b.style.left=`${p.time*100}%`;});
+    }else path.forEach((p,i)=>{const b=$(`.marker[data-index="${i}"]`);if(b)b.style.left=`${p.time*activeFraction()*100}%`;});
     $('.cursor').style.left=`${playhead*100}%`;
     track.setAttribute('aria-valuenow',String(Math.round(playhead*100)));
     $('.time').textContent=`${format(playhead*duration())} / ${format(duration())}`;
     $('[data-role=end]').textContent=format(duration());
     $('[data-role=count]').value=path.length;
-    $('[data-role=duration]').value=String(Math.round(duration()*24)+1);
+    const directed=runtimeTask?.()==='directed | new camera angle';
+    $('[data-role=duration]').disabled=!setDuration||directed;
+    $('[data-role=duration]').value=directed?'39':String(Math.round(duration()*24)+1);
+    modeSelect.value=frameMode?.()||'Freeze Frame';
+    if(experimentSelect)experimentSelect.value=experimentMode();
     $('[data-action=remove]').disabled=selected===0||path.length<=2;
-    $('.selected').textContent=selected===0?'Keyframe 1: imagem original · posição inicial fixa':`Keyframe ${selected+1}: mova a câmera para alterar · ${(path[selected].time*duration()).toFixed(2)}s`;
+    $('.selected').textContent=selected===0?'Keyframe 1: imagem original · posição inicial fixa':`Keyframe ${selected+1}: mova a câmera para alterar · ${(path[selected].time*activeFraction()*duration()).toFixed(2)}s`;
     const limit=elevLimit();
     for(const el of root.querySelectorAll('[data-field=elevation]')){el.min=String(-limit);el.max=String(limit);}
     for(const el of root.querySelectorAll('[data-field]')){const v=path[selected][el.dataset.field];el.value=Number(v.toFixed(3));el.disabled=selected===0;}
     const a=((path[selected].azimuth%360)+360)%360;
     $('.viewlabel').textContent=a<22.5||a>=337.5?'Front View':a<67.5?'Front ¾':a<112.5?'Side View':a<157.5?'Rear ¾':a<202.5?'Back View':a<247.5?'Rear ¾':a<292.5?'Side View':'Front ¾';
-    $('.error').textContent='';
+    $('.error').textContent=toolError;
     const steep=Math.max(...path.map(k=>Math.abs(k.elevation)));
     $('.note').textContent=steep>=45?`Elevação de ${steep}° no plano: o vídeo tende a virar plongée. Use "Órbita pura" para uma volta na altura dos olhos.`
       :steep>=20?`Elevação de ${steep}°: acima de ~20° o horizonte já sai do quadro.`:'';
-    draw(poseAt(playhead));drawDial();paintSwitches();
+    draw(poseAt(playhead));drawDial();
   }
   function setupCanvas(c,height){const w=c.clientWidth||500,dpr=devicePixelRatio||1;if(c.width!==Math.round(w*dpr)||c.height!==Math.round(height*dpr)){c.width=Math.round(w*dpr);c.height=Math.round(height*dpr);}const context=c.getContext('2d');context.setTransform(dpr,0,0,dpr,0,0);context.clearRect(0,0,w,height);return w;}
   function world(p){const a=rad(p.azimuth),e=rad(p.elevation),r=p.distance*1.8;return [Math.sin(a)*Math.cos(e)*r,Math.sin(e)*r,Math.cos(a)*Math.cos(e)*r];}
@@ -128,11 +160,11 @@ export function createCameraEditor({read, write, duration, interpolation, setDur
     for(let i=0;i<8;i++){const a=i*Math.PI/4;dc.beginPath();dc.moveTo(45+Math.sin(a)*31,45+Math.cos(a)*31);dc.lineTo(45+Math.sin(a)*36,45+Math.cos(a)*36);dc.stroke();}
     dc.fillStyle='#9c9ba3';dc.beginPath();dc.arc(45,45,2.4,0,Math.PI*2);dc.fill();const a=rad(path[selected].azimuth);dc.fillStyle='#8644ff';dc.strokeStyle='#a67bff';dc.lineWidth=2;dc.beginPath();dc.arc(45+Math.sin(a)*38,45+Math.cos(a)*38,6,0,Math.PI*2);dc.fill();dc.stroke();dial.setAttribute('aria-valuenow',String(path[selected].azimuth));dial.setAttribute('aria-disabled',String(selected===0));}
   const snap={azimuth:v=>Math.round(v),elevation:v=>Math.round(v),distance:v=>Math.round(v*100)/100};
-  function modify(field,value){if(selected===0||!Number.isFinite(value))return;stop();const e=elevLimit(),limits={azimuth:[-11520,11520],elevation:[-e,e],distance:[.1,4]};path[selected][field]=snap[field](clamp(value,...limits[field]));playhead=path[selected].time;save(false);}
+  function modify(field,value){if(selected===0||!Number.isFinite(value))return;stop();const e=elevLimit(),limits={azimuth:[-11520,11520],elevation:[-e,e],distance:[.1,4]};path[selected][field]=snap[field](clamp(value,...limits[field]));playhead=path[selected].time*activeFraction();save(false);}
   for(const el of root.querySelectorAll('[data-field]'))el.addEventListener('input',()=>modify(el.dataset.field,el.valueAsNumber));
   function pointerTime(e){const r=track.getBoundingClientRect();return clamp((e.clientX-r.left)/r.width,0,1);}
   track.addEventListener('pointerdown',e=>{if(e.target.classList.contains('marker'))return;stop();playhead=pointerTime(e);markerDrag={scrub:true};track.setPointerCapture(e.pointerId);update(false);});
-  track.addEventListener('pointermove',e=>{if(!markerDrag)return;const t=pointerTime(e);if(markerDrag.scrub)playhead=t;else {const i=markerDrag.i;if(i===0)return;path[i].time=snapTime(clamp(t,path[i-1].time+.001,i<path.length-1?path[i+1].time-.001:1));playhead=path[i].time;save(false);}update(false);});
+  track.addEventListener('pointermove',e=>{if(!markerDrag)return;const t=pointerTime(e);if(markerDrag.scrub)playhead=t;else {const i=markerDrag.i;if(i===0)return;path[i].time=snapTime(clamp(t/activeFraction(),path[i-1].time+.001,i<path.length-1?path[i+1].time-.001:1));playhead=path[i].time*activeFraction();save(false);}update(false);});
   track.addEventListener('pointerup',()=>{markerDrag=null;update();});track.addEventListener('pointercancel',()=>markerDrag=null);
   track.addEventListener('keydown',e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();stop();playhead=clamp(playhead+(e.key==='ArrowRight'?.01:-.01),0,1);update(false);}});
   function dialValue(e){const r=dial.getBoundingClientRect();return Math.atan2(e.clientX-r.left-r.width/2,e.clientY-r.top-r.height/2)*180/Math.PI;}
@@ -146,19 +178,28 @@ export function createCameraEditor({read, write, duration, interpolation, setDur
       if(!drag.axis&&Math.hypot(drag.tx,drag.ty)>5)drag.axis=Math.abs(drag.tx)>=Math.abs(drag.ty)?'orbit':'height';
       if(drag.axis==='orbit'){drag.rawAz=clamp(drag.rawAz+dx*.7,-11520,11520);path[selected].azimuth=Math.round(drag.rawAz);}
       else if(drag.axis==='height'){const e=elevLimit();drag.rawEl=clamp(drag.rawEl-dy*e/150,-e,e);path[selected].elevation=Math.round(drag.rawEl);}
-      playhead=path[selected].time;save(false);}}else{yaw+=dx*.008;pitch=clamp(pitch+dy*.008,-1.25,1.25);draw(poseAt(playhead));}});
+      playhead=path[selected].time*activeFraction();save(false);}}else{yaw+=dx*.008;pitch=clamp(pitch+dy*.008,-1.25,1.25);draw(poseAt(playhead));}});
   canvas.addEventListener('pointerup',()=>drag=null);canvas.addEventListener('pointercancel',()=>drag=null);
   canvas.addEventListener('wheel',e=>{const r=canvas.getBoundingClientRect();if(Math.hypot(e.clientX-r.left-cameraScreen[0],e.clientY-r.top-cameraScreen[1])<40){e.preventDefault();modify('distance',path[selected].distance*Math.exp(e.deltaY*.001));}}, {passive:false});
   function tick(now){if(disposed||!playing)return;playhead=((now-start)/1000/duration())%1;update(false);raf=requestAnimationFrame(tick);}
   root.addEventListener('click',e=>{const action=e.target.dataset.action;if(!action)return;
     if(action==='play'){if(playing)stop();else{playing=true;start=performance.now()-playhead*duration()*1000;$('.play').textContent='❚❚';$('.play').setAttribute('aria-label','Pause camera preview');raf=requestAnimationFrame(tick);}return;}
-    stop();if(action==='reset'){path=defaults();selected=1;playhead=.5;save();}
-    if(action==='remove'&&selected>0&&path.length>2){path.splice(selected,1);selected=Math.min(selected,path.length-1);playhead=path[selected].time;save();}
+    stop();
+    if(action==='reset'){path=defaults();selected=1;playhead=.5*activeFraction();save();}
+    if(action==='remove'&&selected>0&&path.length>2){path.splice(selected,1);selected=Math.min(selected,path.length-1);playhead=path[selected].time*activeFraction();save();}
     if(action==='image')$('input[type=file]').click();
     if(action==='clearref'){manualImage=null;linkedSrc='';refreshReference();}
+    if(action==='close'){
+      const last=path[path.length-1],first=path[0];
+      // O upstream so ativa a closure com 360 exatos; arredonda para a volta inteira mais
+      // proxima, sem nunca cair em zero, e devolve altura e raio ao valor inicial.
+      const voltas=Math.round(last.azimuth/360)||(last.azimuth>=0?1:-1);
+      last.azimuth=voltas*360;last.elevation=first.elevation;last.distance=first.distance;
+      save();
+    }
     if(action==='pure'){let changed=false;for(const k of path){if(k.elevation!==0){k.elevation=0;changed=true;}}if(changed)save();}
   });
-  $('[data-role=count]').addEventListener('change',e=>{stop();const n=Number(e.target.value),next=[];for(let i=0;i<n;i++){const t=snapTime(i/(n-1));next.push({time:t,...poseAt(t)});}path=next;selected=Math.min(selected,n-1);playhead=path[selected].time;save();});
+  $('[data-role=count]').addEventListener('change',e=>{stop();const n=Number(e.target.value),next=[];for(let i=0;i<n;i++){const t=snapTime(i/(n-1));next.push({time:t,...pathPoseAt(t)});}path=next;selected=Math.min(selected,n-1);playhead=path[selected].time*activeFraction();save();});
   $('[data-role=duration]').disabled=!setDuration;
   $('[data-role=duration]').addEventListener('change',e=>{stop();setDuration?.(Number(e.target.value));update();});
   $('input[type=file]').addEventListener('change',e=>{const file=e.target.files[0];if(!file)return;const url=URL.createObjectURL(file),img=new Image();img.onload=()=>{manualImage=img;URL.revokeObjectURL(url);refreshReference();};img.onerror=()=>{URL.revokeObjectURL(url);$('.error').textContent='Não foi possível abrir a imagem.';};img.src=url;});
@@ -181,31 +222,8 @@ export function createCameraEditor({read, write, duration, interpolation, setDur
     if(image!==linkedImg){image=linkedImg;draw(poseAt(playhead));}
     referenceLabel();
   }
-  function sync(){const raw=read();if(raw!==lastRaw){try{const data=JSON.parse(raw);if(!Array.isArray(data)||data.length<2||data.length>24)throw Error();for(let i=0;i<data.length;i++){const p=data[i];if(!['time','azimuth','elevation','distance'].every(k=>typeof p[k]==='number'&&Number.isFinite(p[k]))||p.time<0||p.time>1||p.distance<.1||p.distance>4||Math.abs(p.elevation)>89||(i&&p.time<=data[i-1].time))throw Error();}const first=data[0];if(first.time!==0||first.azimuth!==0||first.elevation!==0||first.distance!==1)throw Error();path=data;lastRaw=raw;selected=Math.min(selected,path.length-1);playhead=path[selected].time;}catch{$('.error').textContent='Trajetória inválida. Corrija o JSON ou use Reset. O primeiro ponto deve ser 0, 0°, 0°, distância 1.';return;}}update();}
-  const switchRow=document.createElement('div');switchRow.className='switches';
-  function paintSwitches(){
-    const list=switches?.()||[];
-    if(!list.length){switchRow.style.display='none';return;}
-    switchRow.style.display='';switchRow.replaceChildren();
-    const title=document.createElement('b');title.textContent='Testes';switchRow.append(title);
-    for(const item of list){
-      const b=document.createElement('button');b.className='sw';b.type='button';
-      b.dataset.on=item.on?'1':'0';b.textContent=item.label;b.title=item.hint||'';
-      b.addEventListener('click',()=>{item.toggle();paintSwitches();});
-      switchRow.append(b);
-    }
-    const tag=document.createElement('span');tag.className='closure';
-    const net=path[path.length-1].azimuth-path[0].azimuth;
-    const closes=Math.abs(net)>0.5&&Math.abs(Math.abs(net)%360)<1e-3
-      &&Math.abs(path[0].elevation-path[path.length-1].elevation)<0.5
-      &&Math.abs(path[0].distance-path[path.length-1].distance)<0.01;
-    tag.dataset.on=closes?'1':'0';
-    tag.textContent=closes?'loop closure ativa · volta fechada':'loop closure inativa · a volta não fecha';
-    tag.title='Liga sozinha quando a trajetória fecha 360° na mesma altura e distância.';
-    switchRow.append(tag);
-  }
-  root.insertBefore(switchRow,root.querySelector('.stage')||root.children[1]);
+  function sync(){const fraction=activeFraction();if(fraction!==previousFraction){stop();playhead=clamp(playhead/previousFraction*fraction,0,1);previousFraction=fraction;}const raw=read();if(raw!==lastRaw){try{const data=JSON.parse(raw);if(!Array.isArray(data)||data.length<2||data.length>24)throw Error();for(let i=0;i<data.length;i++){const p=data[i];if(!['time','azimuth','elevation','distance'].every(k=>typeof p[k]==='number'&&Number.isFinite(p[k]))||p.time<0||p.time>1||p.distance<.1||p.distance>4||Math.abs(p.elevation)>89||(i&&p.time<=data[i-1].time))throw Error();}const first=data[0];if(first.time!==0||first.azimuth!==0||first.elevation!==0||first.distance!==1)throw Error();path=data;lastRaw=raw;toolError='';selected=Math.min(selected,path.length-1);playhead=path[selected].time*activeFraction();}catch{$('.error').textContent='Trajetória inválida. Corrija o JSON ou use Reset. O primeiro ponto deve ser 0, 0°, 0°, distância 1.';return;}}update();}
   const observer=new ResizeObserver(()=>{draw(poseAt(playhead));drawDial();});observer.observe(canvas);sync();
   refreshReference();poll=setInterval(refreshReference,1200);
-  return {element:root,sync(){sync();refreshReference();paintSwitches();},destroy(){disposed=true;stop();clearInterval(poll);observer.disconnect();}};
+  return {element:root,sync(){modeSelect.value=frameMode?.()||'Freeze Frame';sync();refreshReference();},destroy(){disposed=true;stop();clearInterval(poll);observer.disconnect();}};
 }

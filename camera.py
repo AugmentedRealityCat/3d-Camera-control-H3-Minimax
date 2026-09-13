@@ -175,21 +175,21 @@ def h3world_clause(pan_rate, tilt_rate):
     return f"the camera {' and '.join(parts)} {'fast' if fast else 'slowly'}", '+'.join(keys)
 
 
-def build_h3world_actions(path, end, frames, interpolation):
+def build_h3world_actions(path, end, frames, interpolation, detail='v15 baseline'):
     latents = max(1, round(frames * H3WORLD_LATENTS_PER_124 / 124))
     span = end / latents
     lines = []
     for index in range(latents):
         t0, t1 = index * span, (index + 1) * span
-        a = interpolate_pose(path, min(t0 / max(end, 1e-9), 1.0), interpolation)
-        b = interpolate_pose(path, min(t1 / max(end, 1e-9), 1.0), interpolation)
+        a = interpolate_pose(path, min(t0 / max(end, 1e-9), 1.0), interpolation, detail)
+        b = interpolate_pose(path, min(t1 / max(end, 1e-9), 1.0), interpolation, detail)
         clause, keys = h3world_clause((b['azimuth'] - a['azimuth']) / span,
                                       (b['elevation'] - a['elevation']) / span)
         lines.append(f"latent {index+1:>2} [{t0:.3f}s-{t1:.3f}s] {keys or '-':<5} {clause}")
-    radius = abs(path[-1]['distance'] - path[0]['distance'])
+    radius = sum(abs(b['distance']-a['distance']) for a,b in zip(path,path[1:]))
     header = [
         f'H3-World action schedule: {latents} clauses, one per video latent, for {frames} frames at {FPS:g} fps.',
-        'Camera keys only. W, A, S and D are never pressed, so the character and the scene stay still.',
+        'Approximate camera text only. No W/A/S/D actions are requested; this does not freeze the scene.',
         'Limits this cannot express, and where it differs from the orbit in the editor:',
         '  Pan is the camera turning where it stands, not travelling around the subject. Perspective does not '
         'change, surfaces hidden in the first frame are not revealed, and the subject slides out of frame instead '
@@ -210,20 +210,12 @@ def build_h3world_actions(path, end, frames, interpolation):
     return '\n'.join(header + lines)
 
 
-def interpolate_pose(path, time, interpolation='smooth'):
-    """Same per-segment smoothstep as panel.js; also used by regression tests."""
-    if time <= path[0]['time']:
-        return {k: path[0][k] for k in ('azimuth', 'elevation', 'distance')}
-    for a, b in zip(path, path[1:]):
-        if time <= b['time']:
-            u = (time - a['time']) / (b['time'] - a['time'])
-            if interpolation == 'smooth':
-                u = u * u * (3 - 2 * u)
-            return {k: a[k] + (b[k] - a[k]) * u for k in ('azimuth', 'elevation', 'distance')}
-    return {k: path[-1][k] for k in ('azimuth', 'elevation', 'distance')}
+from .trajectory_math import interpolate_pose
 
 
 def _camera_mode(start, end):
+    if all(abs(end[k]-start[k]) < 1e-8 for k in ('azimuth','elevation','distance')):
+        return 'hold the camera viewpoint, elevation and radius unchanged for this entire interval'
     moves = []
     da = end['azimuth'] - start['azimuth']
     de = end['elevation'] - start['elevation']
@@ -246,24 +238,9 @@ def _camera_mode(start, end):
 
 
 def beat_curves(path, interpolation, detail='extended contracts'):
-    """Easing belongs at the ends of the take and at reversals, not at every keyframe.
-
-    Smoothstep on each segment decelerates the camera to a full stop at every waypoint,
-    which reads as a stutter in a multi-keyframe orbit.
-    """
-    count = len(path) - 1
-    if detail == 'v15 baseline':
-        return ['smoothstep' if interpolation == 'smooth' else 'linear'] * count
-    if interpolation != 'smooth':
-        return ['linear'] * count
-    turns = reversal_indices(path)
-    curves = []
-    for index in range(count):
-        opens = index == 0 or index in turns
-        closes = index == count - 1 or (index + 1) in turns
-        curves.append('ease-in-out' if opens and closes else
-                      'ease-in' if opens else 'ease-out' if closes else 'linear')
-    return curves
+    curve = ('linear' if interpolation != 'smooth' else
+             'monotone cubic per axis' if detail == 'extended contracts' else 'smoothstep')
+    return [curve] * (len(path) - 1)
 
 
 def _direction_contract(path, aspect=None):
@@ -294,7 +271,7 @@ def build_plan(path, end, interpolation, instruction, aspect, detail='extended c
             signed_orbit_degrees=b['azimuth'] - a['azimuth'],
             speed_curve=beat_curves(path, interpolation, detail)[i-1],
             rotation_deg_per_s=round(abs(b['azimuth']-a['azimuth']) / max((b['time']-a['time'])*end, 1e-9), 3),
-            background_travel=parallax_travel(b['azimuth']-a['azimuth'], b['elevation']-a['elevation'], aspect),
+            background_travel='',
             start={k: a[k] for k in ('azimuth','elevation','distance')},
             end={k: b[k] for k in ('azimuth','elevation','distance')},
         ))
@@ -328,40 +305,31 @@ def build_plan(path, end, interpolation, instruction, aspect, detail='extended c
              'at the next keyframe. Pass through the keyframe without an extra dwell or cut. Angular and '
              'radius offsets ease together; interpolate within each pair of endpoints without overshoot.'
              if not extended else
-             'Ease in at the start of the take, hold one constant rate through the middle, ease out at the end. '
-             'Do not slow down at the waypoints in between; the camera only comes to a stop where the direction '
-             'actually reverses. Angular and radius offsets ease together, without overshoot. No extra dwell or cut.')
+             'Interpolate each axis with a monotone cubic curve. Start and finish at zero speed. '
+             'Keep each axis velocity continuous at interior keyframes; slow that axis to zero at its holds '
+             'and reversals. Preserve explicit hold intervals. Never overshoot the two endpoint values. '
+             'Speed may vary through the take; do not add a stop at every waypoint or a cut.')
             if interpolation == 'smooth' else
             'Interpolate the angular offsets and radius linearly WITHIN EACH segment. Speed may change at '
             'a keyframe when adjacent segments differ in duration or displacement. No extra dwell or cut.'),
-        parallax=('Reveal the same scene consistently through physical camera motion. Let perspective and '
-                  'occlusion follow the scene geometry; no prescribed screen-space background displacement.'
-                  if not extended else
-                  'Reveal the same scene consistently through physical camera motion. Let perspective and '
-                  'occlusion follow the scene geometry; no screen-space box is prescribed. Over the take, '
-                  + (parallax_travel(path[-1]['azimuth']-path[0]['azimuth'],
-                                     path[-1]['elevation']-path[0]['elevation'], aspect) or
-                     'the camera barely changes angle, so the background stays put')
-                  + '. This parallax is the proof the camera really moved; if the background is static the shot is '
-                    'wrong, and if it enters from the wrong edge the direction is reversed.'),
+        parallax='Reveal consistent perspective and occlusion from physical camera motion. Background displacement depends on scene depth; do not prescribe an artificial screen-space shift.',
         axis_separation=('' if not extended else
-            'Rotation and elevation are two separate controls. Every rotation traces a level circle around the '
-            'target at whatever height the camera already has, like walking around someone on flat ground: it '
-            'leaves camera height untouched. Camera height comes from the elevation offset alone, and from '
-            'nothing else.'),
-        rotation_direction=_direction_contract(path, aspect) if extended else '',
+            'Follow azimuth, elevation angle and radius independently. An azimuth-only move with fixed '
+            'elevation and radius stays on a level orbit. Changing radius at a nonzero elevation can also '
+            'change world height. Do not add an unrequested radius or elevation change.'),
+        rotation_direction=('Read signed orbit offsets in the moving camera frame while aiming at the target. Keep the requested direction and full turns; do not rotate the subject instead.' if extended else ''),
         completion=('' if not extended else
             f'The camera covers {sum(abs(b["azimuth"]-a["azimuth"]) for a,b in zip(path,path[1:])):g} degrees of '
             f'rotation in {end:.3f}s, an average of '
             f'{sum(abs(b["azimuth"]-a["azimuth"]) for a,b in zip(path,path[1:]))/max(end,1e-9):.1f} degrees per '
-            f'second. Hold that rate so the last frame lands on {end_view(path[-1]["azimuth"]-path[0]["azimuth"])}. '
+            f'second over the motion interval, not an instantaneous speed constraint. Follow the segment times and land on signed orbit offset {path[-1]["azimuth"]:g} degrees. '
             f'Reaching only part of the way is the most common failure: the amount of travel matters as much as '
             f'its direction, and a small angle must stay small.'
             if sum(abs(b['azimuth']-a['azimuth']) for a,b in zip(path,path[1:])) > 0.5 else ''),
         reversals=('' if not extended else
             'Direction reversals at ' + ', '.join(f"{path[i]['time']*end:.3f}s" for i in turns) +
-            f". At each turnaround {'the camera eases down to a full stop and rounds back the other way' if interpolation == 'smooth' else 'the camera holds its speed into the turn, changes direction and holds it out again'}"
-            ': no hard flick, no whip pan, no cut, and the background parallax reverses with it.' if turns else ''),
+            f". At each turnaround {'the orbit axis eases to zero speed and reverses while the other axes follow their own curves' if interpolation == 'smooth' else 'the camera holds its speed into the turn, changes direction and holds it out again'}"
+            ': no added cut or dwell.' if turns else ''),
         segments=segments, final=final,
         forbid='No cuts, subject rotation, subject animation, digital zoom, lighting changes, or visible planning annotations.',
         instruction=instruction.strip() or 'Preserve the source scene.',
@@ -407,7 +375,7 @@ def plan_text(plan, sections=False):
         row = f"[{s['start_s']:.6f}s-{s['end_s']:.6f}s] {s['camera_mode']}"
         if 'rotation_deg_per_s' in s:
             if s['rotation_deg_per_s'] > 0.5:
-                row += f"; rotation rate {s['rotation_deg_per_s']:.1f} degrees per second"
+                row += f"; average segment rotation rate {s['rotation_deg_per_s']:.1f} degrees per second"
             if s['background_travel']:
                 row += f"; {s['background_travel']}"
             row += f"; speed curve {s['speed_curve']}"
@@ -426,7 +394,7 @@ def plan_text(plan, sections=False):
 
 def compile_camera(raw, profile, interpolation, instruction, framing=None, minimax_format=None,
                    reference_image=None, elevation_range=None, orbit_direction=None, subject_box=None,
-                   runtime_task=None, prompt_detail=None):
+                   runtime_task=None, prompt_detail=None, allow_closure=True):
     if profile not in PROFILES or interpolation not in ('smooth','linear'):
         raise ValueError('Unknown duration profile or interpolation.')
     framing=_choice(framing, FRAMINGS, 'medium shot')
@@ -449,13 +417,13 @@ def compile_camera(raw, profile, interpolation, instruction, framing=None, minim
     net=path[-1]['azimuth']-path[0]['azimuth']; turn=abs(net)%360
     arc=360.0 if turn<1e-6 and abs(net)>1e-6 else _clamp(turn,15.0,360.0)
     # Upstream only engages loop closure at exactly 360 degrees with the frame anchor.
-    # It then VAE-encodes the source a second time and pins the last frame to it, which
-    # forces the full turn through the latent instead of relying on prompt text alone.
+    # The upstream encoder can anchor the final frame to the source; this constrains
+    # the endpoint, but does not prove a full orbit or constrain the intervening path.
     # Require the height and the radius to return too, or the final frame would not match.
-    closes=(math.isclose(arc,360.0,abs_tol=1e-3)
-            and math.isclose(path[0]['elevation'],path[-1]['elevation'],abs_tol=0.5)
-            and math.isclose(path[0]['distance'],path[-1]['distance'],abs_tol=0.01))
-    closes = closes and not task
+    closes=(allow_closure and reference_image is not None and not task
+            and math.isclose(abs(net),360.,rel_tol=0,abs_tol=1e-6)
+            and math.isclose(path[0]['elevation'],path[-1]['elevation'],rel_tol=0,abs_tol=1e-6)
+            and math.isclose(path[0]['distance'],path[-1]['distance'],rel_tol=0,abs_tol=1e-6))
     if task:
         instruction=(f'Settled tail: complete the whole camera move by {end:.3f}s and then hold the new framing '
                      f'perfectly still, with no drift, through {frames/FPS:.3f}s. The still tail is what the final '
@@ -483,7 +451,7 @@ def compile_camera(raw, profile, interpolation, instruction, framing=None, minim
         'coverage_hold_frames':1,'coverage_loop_closure':bool(closes),
     }
     # Metadata only. Generic H3 Edit coverage windows cannot describe an arbitrary path.
-    storyboard=dict(plan,path=hud_path,model_path=path,orbit_direction=orbit_direction,subject_framing=framing,
+    storyboard=dict(plan,interpolation=interpolation,prompt_detail=prompt_detail,runtime_task=runtime_task,output_duration_s=frames/FPS,last_frame_s=(frames-1)/FPS,path=hud_path,model_path=path,orbit_direction=orbit_direction,subject_framing=framing,
                     framing_note='Legacy preset retained as metadata only; no measured subject box is available.',
                     prompt_control='semantic instructions, not geometric conditioning')
     notes=[]
@@ -492,9 +460,29 @@ def compile_camera(raw, profile, interpolation, instruction, framing=None, minim
         notes.append('Final hold is shorter than one frame; no separate visible hold is requested. The saved path is unchanged.')
     if any(abs(p['elevation'])>ELEVATION_RANGES[elevation_range] for p in path):
         notes.append('Some keyframes exceed the selected editor slider range; their saved values are preserved.')
+    percorrido=sum(abs(b['azimuth']-a['azimuth']) for a,b in zip(path,path[1:]))
+    # Sempre visivel: 'o 360 nao esta saindo' costuma ser 'o 360 nao esta entrando',
+    # e sem este numero nao da para saber qual dos dois e.
+    notes.append(f'Giro: {percorrido:g} graus percorridos, {net:g} graus liquidos, '
+                 f"{len(path)-1} trecho{'s' if len(path)>2 else ''}.")
+    if not closes and abs(net) > 180:
+        # Quantifica o quanto falta: a closure do upstream exige 360 exatos, e a diferenca
+        # costuma ser de poucos graus que ninguem ve so olhando a trajetoria.
+        falta = min(abs(abs(net) % 360), 360 - abs(abs(net) % 360))
+        motivos = []
+        if not allow_closure: motivos.append('Motion Frame: ação continua / action continues')
+        if reference_image is None: motivos.append('sem imagem conectada / no connected image')
+        if task: motivos.append('tarefa de imagem / still-image task')
+        if abs(net)>360+1e-6: motivos.append('exige uma volta de 360 / requires one 360-degree turn')
+        if falta > 1e-3: motivos.append(f'faltam {falta:.2f} graus de giro')
+        if abs(path[0]['elevation'] - path[-1]['elevation']) > 1e-6:
+            motivos.append(f"a elevacao termina em {path[-1]['elevation']:g} em vez de {path[0]['elevation']:g}")
+        if abs(path[0]['distance'] - path[-1]['distance']) > 1e-6:
+            motivos.append(f"a distancia termina em {path[-1]['distance']:g} em vez de {path[0]['distance']:g}")
+        if motivos:
+            notes.append('Loop closure OFF: ' + ', '.join(motivos) + '. Use o botao Fechar volta no painel.')
     if closes:
-        notes.append('Loop closure ON: the path returns to its start, so the source image is pinned to the final '
-                     'frame as Picture 2 and the full turn is enforced by the latent, not only by the prompt.')
+        notes.append('Loop closure ON: PT: solicita ancorar o último frame no H3 Edit com options e imagem conectados. Isso não garante que o percurso foi seguido. EN: requests final-frame anchoring in H3 Edit when options and source image are connected; does not prove the full orbit was followed. Native H3 requires separate end-frame wiring.')
     if task:
         notes.append(f'Directed task: the profile widget is ignored, the move completes by {end:.3f}s and the '
                      f'decoder picks one image from the last {DIRECTED_TAIL_CANDIDATES} frames.')
@@ -504,8 +492,7 @@ def compile_camera(raw, profile, interpolation, instruction, framing=None, minim
           'Literal [L,T,W,H] anchors are included. Empty subject_box uses the full image boundary only; enter a measured subject box to identify the orbit target. '
           'Legacy compact JSON (no boxes) is retained as a name; all formats now include the coordinate anchor. '
           'Prompt guidance only; angular accuracy still depends on the model. '+' '.join(notes))
-    return (compiled,options,json.dumps(storyboard,ensure_ascii=False,indent=2),info,minimax,frames,FPS,
-            build_h3world_actions(path,end,frames,interpolation))
+    return (compiled,options,json.dumps(storyboard,ensure_ascii=False,indent=2),info,minimax,frames,FPS)
 
 
 class H3CameraEditor:
@@ -534,9 +521,7 @@ class H3CameraEditor:
             },
             'optional': {
                 'subject_framing': (list(FRAMINGS), {'default': 'medium shot', 'tooltip':
-                    'Quanto o sujeito ocupa do quadro NA IMAGEM ORIGINAL. close-up: cabeça e ombros, 53% da largura. '
-                    'medium shot: cintura para cima, 28%. wide shot: corpo inteiro ao longe, 9,7%. Calibrado contra '
-                    'as caixas do tutorial da MiniMax. Errar aqui põe todas as coordenadas fora de escala.'}),
+                    'PT: Tipo de plano da imagem: close-up = rosto e ombros; medium shot = cintura para cima; wide shot = sujeito e cenário. Nesta versão, este seletor apenas registra o tipo de plano: não aplica zoom, recorte ou movimento à câmera. Pode deixar como está. Para indicar onde está o sujeito na imagem, use subject_box [L=..., T=..., W=..., H=...].\nEN: Image framing: close-up = face and shoulders; medium shot = waist up; wide shot = subject and surroundings. In this version, this selector only records the shot type: it does not apply camera zoom, cropping or movement. You can leave it as is. To indicate the subject location in the image, use subject_box [L=..., T=..., W=..., H=...].'}),
                 'minimax_format': (MINIMAX_FORMATS, {'default': 'coordinate only', 'tooltip':
                     'A redação da saída minimax_prompt. coordinate only: bloco de coordenadas em texto. '
                     'coordinate + H3 sections: o mesmo dentro das seções do H3. compact JSON: objeto JSON, quase sem '
@@ -556,16 +541,6 @@ class H3CameraEditor:
                 'orbit_direction': (ORBIT_DIRECTIONS, {'default': 'invert H3 orbit', 'tooltip':
                     'Calibração do sentido entre o que o painel desenha e o que o H3 entrega. Se o vídeo girar para o '
                     'lado oposto ao do painel, troque aqui. Não altera a trajetória salva.'}),
-                'runtime_task': (list(RUNTIME_TASKS), {'default': 'scene coverage | camera path', 'tooltip':
-                    'A primeira opção entrega VÍDEO, com a duração vindo do widget profile. A segunda entrega UMA '
-                    'IMAGEM de um novo ângulo: fixa 39 frames, completa o movimento em 65% do clipe e segura o '
-                    'enquadramento imóvel no resto, porque é dessa cauda parada que o decodificador tira a imagem '
-                    'final. Também tem botão na barra Testes do painel.'}),
-                'prompt_detail': (PROMPT_DETAIL, {'default': 'v15 baseline', 'tooltip':
-                    'v15 baseline: o prompt sai exatamente como na versão anterior, que já estava funcionando. '
-                    'extended contracts: acrescenta separação de eixos, teste de direção por borda de quadro, '
-                    'completude do giro, graus por segundo e magnitude de paralaxe. Quase o dobro de palavras, então '
-                    'é opcional. Também tem botão na barra Testes do painel.'}),
                 'subject_box': ('STRING', {'default': '', 'multiline': False, 'tooltip':
                     'Onde o sujeito está na imagem original, no formato [L=0.516, T=0.148, W=0.071, H=0.249]. Vazio '
                     'usa os limites da imagem inteira, de propósito, sem chutar uma caixa. Preencha se o sujeito '
@@ -589,9 +564,9 @@ class H3CameraEditor:
         'coluna de teclas ao lado. Atenção aos limites, que a própria saída declara no cabeçalho: pan não é órbita, '
         'a distância não tem tecla, e só 124 frames é horizonte treinado.',
     )
-    RETURN_TYPES = ('STRING', 'H3EDIT_OPTIONS', 'STRING', 'STRING', 'STRING', 'INT', 'FLOAT', 'STRING')
-    RETURN_NAMES = ('compiled_prompt', 'options', 'storyboard_json', 'info', 'minimax_prompt', 'length', 'fps',
-                    'h3world_actions')
+    RETURN_TYPES = ('STRING', 'H3EDIT_OPTIONS', 'STRING', 'STRING', 'STRING', 'INT', 'FLOAT')
+    RETURN_NAMES = ('compiled_prompt', 'options', 'storyboard_json', 'info', 'minimax_prompt', 'length',
+                    'fps')
     FUNCTION = 'run'
     CATEGORY = 'Bruxos do VFX/Camera H3'
     DESCRIPTION = (
