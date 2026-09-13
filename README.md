@@ -2,7 +2,8 @@
 
 `#bruxosdovfx`
 
-<img width="637" height="1638" alt="image" src="https://github.com/user-attachments/assets/c104f2f8-0afd-4dc8-846d-4fd5373f9719" />
+<img width="593" height="771" alt="image" src="https://github.com/user-attachments/assets/47d93a37-b474-473a-b97c-337829481598" />
+
 
 Editor visual de câmera para **MiniMax H3** dentro do ComfyUI.  
 Visual camera editor for **MiniMax H3** inside ComfyUI.
