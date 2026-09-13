@@ -26,7 +26,7 @@ https://github.com/user-attachments/assets/406871f4-e8b5-4b3d-8e76-abbd057e2a94
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/NyckM/3d-Camera-control-H3-Minimax.git
+git clone https://github.com/NyckM/3d-Camera-control-H3-Minimax
 ```
 
 Reinicie o ComfyUI e procure **bruxosdovfx • Camera H3**.  
